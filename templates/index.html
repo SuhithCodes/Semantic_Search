@@ -36,7 +36,7 @@
             border-radius: 4px;
             font-size: 1rem;
         }
-        #search-button {
+        #search-button, #ai-answer-button {
             padding: 0.75rem 1.5rem;
             border: none;
             border-radius: 4px;
@@ -46,8 +46,14 @@
             cursor: pointer;
             transition: background-color 0.3s;
         }
-        #search-button:hover {
+        #search-button:hover, #ai-answer-button:hover {
             background-color: #2980b9;
+        }
+        #ai-answer-button {
+            background-color: #2ecc71;
+        }
+        #ai-answer-button:hover {
+            background-color: #27ae60;
         }
         .result {
             border-bottom: 1px solid #eee;
@@ -97,6 +103,19 @@
         }
         .view-question-btn:hover, .view-answer-btn:hover {
             background-color: #3498db;
+            color: white;
+        }
+        .generate-ai-answer-btn {
+            padding: 0.5rem 1rem;
+            border: 1px solid #2ecc71;
+            border-radius: 4px;
+            background-color: transparent;
+            color: #2ecc71;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .generate-ai-answer-btn:hover {
+            background-color: #2ecc71;
             color: white;
         }
         #spinner {
@@ -226,7 +245,7 @@
                 // Conditionally create the "View Answer" button
                 let answerButton = '';
                 if (metadata.accepted_answer_id) {
-                    answerButton = `<button class="view-answer-btn" data-answer-id="${metadata.accepted_answer_id}">View Answer</button>`;
+                    answerButton = `<button class="view-answer-btn" data-question-id="${results.ids[i]}">View Answer</button>`;
                 }
 
                 html += `
@@ -239,6 +258,7 @@
                         <div class="result-buttons">
                             <button class="view-question-btn" data-index="${i}">View Question</button>
                             ${answerButton}
+                            <button class="generate-ai-answer-btn" data-index="${i}">Generate AI Answer</button>
                         </div>
                     </div>
                 `;
@@ -248,36 +268,81 @@
         }
 
         function addResultButtonListeners() {
-            resultsContainer.addEventListener('click', async (e) => {
-                const target = e.target;
-                
-                // Handle "View Question" button clicks
-                if (target.matches('.view-question-btn')) {
-                    const index = target.dataset.index;
+            const viewQuestionButtons = document.querySelectorAll('.view-question-btn');
+            const viewAnswerButtons = document.querySelectorAll('.view-answer-btn');
+            const generateAIButtons = document.querySelectorAll('.generate-ai-answer-btn');
+
+            viewQuestionButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    const index = button.dataset.index;
                     const bodyContent = currentResults.metadatas[index].body || 'No body content available.';
                     const titleContent = currentResults.titles[index];
                     showModal(titleContent, bodyContent);
+                });
+            });
+
+            viewAnswerButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    const questionId = button.dataset.questionId;
+                    showAnswer(questionId);
+                });
+            });
+
+            generateAIButtons.forEach(button => {
+                button.addEventListener('click', async () => {
+                    const index = button.dataset.index;
+                    const title = currentResults.titles[index];
+                    const body = currentResults.metadatas[index].body;
+                    const prompt = `Question Title: ${title}\n\nQuestion Body:\n${body}\n\nProvide an answer to the above question:`;
+                    showAIAnswer(prompt);
+                });
+            });
+        }
+
+        async function showAIAnswer(prompt) {
+            // Create a temporary modal with a spinner
+            const tempModalId = 'temp-ai-spinner-modal';
+            showModalWithContent('Generating AI Answer...', '<div id="modal-spinner" style="width: 40px; height: 40px; margin: 2rem auto; border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite;"></div>', tempModalId);
+
+            try {
+                const response = await fetch('/generate_ai_answer', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ prompt: prompt }),
+                });
+
+                if (!response.ok) {
+                    throw new Error('AI answer generation failed.');
                 }
 
-                // Handle "View Answer" button clicks
-                if (target.matches('.view-answer-btn')) {
-                    const answerId = target.dataset.answerId;
-                    spinner.style.display = 'block'; // Show spinner while fetching
-                    try {
-                        const response = await fetch(`/get_answer/${answerId}`);
-                        if (!response.ok) {
-                            throw new Error('Failed to fetch answer.');
-                        }
-                        const data = await response.json();
-                        showModal('Accepted Answer', data.body);
-                    } catch (error) {
-                        console.error('Error fetching answer:', error);
-                        showModal('Error', '<p>Could not fetch the answer. Please try again later.</p>');
-                    } finally {
-                        spinner.style.display = 'none'; // Hide spinner
-                    }
-                }
-            });
+                const result = await response.json();
+                
+                // Close the spinner modal and show the real one
+                closeModal(tempModalId);
+                displayAIAnswer(result.body);
+
+            } catch (error) {
+                console.error('Error:', error);
+                closeModal(tempModalId);
+                showModalWithContent('Error', '<p>An error occurred while generating the AI answer.</p>');
+            }
+        }
+
+        function displayAIAnswer(answerBody) {
+            const modalHTML = `
+                <div id="ai-answer-modal" class="modal">
+                    <div class="modal-content">
+                        <span class="close-button" onclick="closeModal('ai-answer-modal')">&times;</span>
+                        <h2>AI Generated Answer</h2>
+                        <div class="modal-body">
+                            ${answerBody.replace(/\n/g, '<br>')}
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.insertAdjacentHTML('beforeend', modalHTML);
         }
 
         function showModal(title, content) {
@@ -311,6 +376,57 @@
                     modal.remove();
                 }
             });
+        }
+
+        function closeModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if (modal) {
+                modal.remove();
+            }
+        }
+
+        async function showModalWithContent(title, body, modalId = 'content-modal') {
+            // Remove existing modal if any
+            closeModal(modalId);
+            
+            const modalHTML = `
+                <div id="${modalId}" class="modal">
+                    <div class="modal-content">
+                        <span class="close-button" onclick="closeModal('${modalId}')">&times;</span>
+                        <h2>${title}</h2>
+                        <div class="modal-body">
+                            ${body}
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.insertAdjacentHTML('beforeend', modalHTML);
+        }
+
+        async function showAnswer(questionId) {
+            const modalId = `answer-modal-${questionId}`;
+            showModalWithContent('Loading Answer...', '<div id="modal-spinner" style="width: 40px; height: 40px; margin: 2rem auto; border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite;"></div>', modalId);
+
+            try {
+                const response = await fetch(`/scrape_answer/${questionId}`);
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to fetch answer.');
+                }
+                const data = await response.json();
+                
+                closeModal(modalId);
+                
+                if (data.body) {
+                    showModalWithContent('Scraped Answer', data.body);
+                } else {
+                    showModalWithContent('Error', '<p>Could not find an answer body.</p>');
+                }
+            } catch (error) {
+                console.error('Error fetching answer:', error);
+                closeModal(modalId);
+                showModalWithContent('Error', `<p>${error.message}</p>`);
+            }
         }
     </script>
 

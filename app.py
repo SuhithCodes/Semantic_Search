@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify, render_template
 import chromadb
 from sentence_transformers import SentenceTransformer
 import requests
+from bs4 import BeautifulSoup
 
 # Initialize the Flask application
 app = Flask(__name__)
@@ -61,37 +62,84 @@ def search():
 
     return jsonify(response_data)
 
-@app.route('/get_answer/<answer_id>')
-def get_answer(answer_id):
+@app.route('/scrape_answer/<question_id>')
+def scrape_answer(question_id):
     """
-    Fetches an answer from the Stack Exchange API.
+    Scrapes the accepted or top answer for a given question ID from Stack Overflow.
     """
     try:
-        # The Stack Exchange API endpoint for fetching answers
-        api_url = f"https://api.stackexchange.com/2.3/answers/{answer_id}"
-        
-        # Parameters for the API request
-        # The 'filter' is important: it tells the API to include the answer body in the response.
-        params = {
-            'site': 'stackoverflow',
-            'filter': '!nO_c2es(N5' # Filter to get the answer body
+        url = f"https://stackoverflow.com/questions/{question_id}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-
-        # Make the GET request to the API
-        response = requests.get(api_url, params=params)
-        response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
         
-        data = response.json()
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
 
-        if data['items']:
-            # Return the body of the first answer found
-            answer_body = data['items'][0].get('body', 'Answer body not found.')
-            return jsonify({'body': answer_body})
+        soup = BeautifulSoup(response.content, 'html.parser')
+
+        # Prioritize the accepted answer
+        accepted_answer = soup.find('div', class_='accepted-answer')
+        
+        answer_body_html = None
+        if accepted_answer:
+            answer_body_html = accepted_answer.find('div', class_='s-prose js-post-body')
+        else:
+            # Fallback to the first answer if none is accepted
+            answer_elements = soup.find_all('div', class_='answer')
+            if answer_elements:
+                answer_body_html = answer_elements[0].find('div', class_='s-prose js-post-body')
+
+        if answer_body_html:
+            return jsonify({'body': str(answer_body_html)})
         else:
             return jsonify({'error': 'Answer not found.'}), 404
 
     except requests.exceptions.RequestException as e:
-        # Handle network errors or bad responses
+        return jsonify({'error': str(e)}), 500
+    except Exception as e:
+        return jsonify({'error': f"An unexpected error occurred: {str(e)}"}), 500
+
+@app.route('/generate_ai_answer', methods=['POST'])
+def generate_ai_answer():
+    """
+    Generates an AI answer using a local Llama model.
+    """
+    data = request.get_json()
+    prompt = data.get('prompt', '')
+
+    if not prompt:
+        return jsonify({"error": "Prompt cannot be empty."}), 400
+
+    try:
+        # The local Llama API endpoint
+        llama_api_url = "http://localhost:11434/api/chat"
+
+        # The payload for the Llama API
+        payload = {
+            "model": "llama3.2:1b",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "stream": False
+        }
+
+        # Make the POST request to the Llama API
+        response = requests.post(llama_api_url, json=payload)
+        response.raise_for_status()  # Raise an exception for bad status codes
+
+        llama_data = response.json()
+        
+        # Extract the content from the response
+        ai_answer = llama_data.get('message', {}).get('content', 'AI answer not found.')
+
+        return jsonify({'body': ai_answer})
+
+    except requests.exceptions.RequestException as e:
+        # Handle network errors or bad responses from Llama API
         return jsonify({'error': str(e)}), 500
 
 
